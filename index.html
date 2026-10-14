@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="英语听写">
+<meta name="theme-color" content="#ff8a3d">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<title>英语听写 · 记忆小助手</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="title-wrap">
+      <h1 id="pageTitle">今日任务</h1>
+      <div class="sub" id="todayLabel"></div>
+    </div>
+    <button id="settingsBtn" class="icon-btn" title="设置">⚙️</button>
+  </header>
+
+  <main id="view"></main>
+
+  <nav class="tabbar">
+    <button class="tab" data-tab="today">📅<span>今日</span></button>
+    <button class="tab" data-tab="mistakes">📕<span>错题本</span></button>
+    <button class="tab" data-tab="lexicon">📚<span>词库</span></button>
+    <button class="tab" data-tab="upload">⬆️<span>上传</span></button>
+  </nav>
+</div>
+
+<!-- 听写会话（全屏） -->
+<section id="session" class="session hidden" aria-hidden="true"></section>
+
+<!-- 设置面板 -->
+<section id="settingsPanel" class="sheet hidden"></section>
+
+<script src="data.js"></script>
+<script src="js/store.js"></script>
+<script src="js/scheduler.js"></script>
+<script src="js/parser.js"></script>
+<script src="js/app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>

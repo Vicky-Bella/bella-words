@@ -1,0 +1,16 @@
+{
+  "name": "英语听写 · 记忆小助手",
+  "short_name": "英语听写",
+  "description": "按单元顺序推送、艾宾浩斯复习、手写听写的英语学习小工具",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fdf6ec",
+  "theme_color": "#ff8a3d",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
