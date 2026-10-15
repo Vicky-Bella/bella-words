@@ -224,11 +224,139 @@
   /* ---------------- 听写会话 ---------------- */
   let sess = null;
 
+  /* ---- 读音（浏览器内置 TTS） ---- */
+  function speakEn(text) {
+    if (!('speechSynthesis' in window)) { toast('当前设备不支持朗读'); return; }
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'en-US';
+      u.rate = 0.85;
+      u.pitch = 1;
+      window.speechSynthesis.speak(u);
+    } catch (e) { toast('朗读失败'); }
+  }
+
+  /* ---- OCR（Tesseract.js）---- */
+  let ocrWorker = null, ocrReady = null;
+  function warmupOcr() {
+    if (ocrWorker || ocrReady) return;
+    if (!window.Tesseract) { return; }
+    ocrReady = (async () => {
+      try {
+        const base = location.href.replace(/[^/]*$/, '');
+        const worker = await Tesseract.createWorker('eng', 1, {
+          workerPath: base + 'lib/tesseract/worker.min.js',
+          corePath: base + 'lib/tesseract/',
+          langPath: base + 'lib/tesseract/',
+          logger: () => {},
+        });
+        await worker.setParameters({
+          tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.!? -,;",
+          preserve_interword_spaces: '1',
+        });
+        ocrWorker = worker;
+        return worker;
+      } catch (e) {
+        ocrReady = null;
+        throw e;
+      }
+    })();
+  }
+  async function getOcr() {
+    warmupOcr();
+    return ocrReady;
+  }
+
+  /* ---- 画布书写 ---- */
+  const drawState = { mode: 'pen', drawing: false, lastX: 0, lastY: 0 };
+  function canvasPos(e, canvas) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function onDrawDown(e) {
+    const canvas = e.currentTarget;
+    const ctx = canvas._ctx;
+    if (!ctx) return;
+    canvas.setPointerCapture(e.pointerId);
+    drawState.drawing = true;
+    const p = canvasPos(e, canvas);
+    drawState.lastX = p.x; drawState.lastY = p.y;
+    if (drawState.mode === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.lineWidth = 34;
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = '#1b1f2a';
+      ctx.lineWidth = 2.6;
+    }
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x + 0.1, p.y + 0.1);
+    ctx.stroke();
+    e.preventDefault();
+  }
+  function onDrawMove(e) {
+    if (!drawState.drawing) return;
+    const canvas = e.currentTarget;
+    const ctx = canvas._ctx;
+    const p = canvasPos(e, canvas);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    drawState.lastX = p.x; drawState.lastY = p.y;
+    e.preventDefault();
+  }
+  function onDrawUp(e) {
+    drawState.drawing = false;
+  }
+  function setupCanvas() {
+    const canvas = $('#inkCanvas');
+    if (!canvas) return;
+    const r = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(r.width * dpr));
+    canvas.height = Math.max(1, Math.round(r.height * dpr));
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    canvas._ctx = ctx;
+    canvas.addEventListener('pointerdown', onDrawDown);
+    canvas.addEventListener('pointermove', onDrawMove);
+    canvas.addEventListener('pointerup', onDrawUp);
+    canvas.addEventListener('pointercancel', onDrawUp);
+    canvas.addEventListener('pointerleave', onDrawUp);
+  }
+  function isCanvasEmpty(canvas) {
+    if (!canvas || !canvas._ctx) return true;
+    const data = canvas._ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
+    return true;
+  }
+  function canvasToText() {
+    return new Promise((resolve, reject) => {
+      const canvas = $('#inkCanvas');
+      const tmp = document.createElement('canvas');
+      tmp.width = canvas.width; tmp.height = canvas.height;
+      const tctx = tmp.getContext('2d');
+      tctx.fillStyle = '#ffffff';
+      tctx.fillRect(0, 0, tmp.width, tmp.height);
+      tctx.drawImage(canvas, 0, 0);
+      const url = tmp.toDataURL('image/png');
+      getOcr().then(async worker => {
+        if (!worker) throw new Error('OCR 未加载');
+        const { data } = await worker.recognize(url);
+        resolve((data.text || '').trim());
+      }).catch(reject);
+    });
+  }
+
   function startSession(steps, title) {
     if (!steps.length) { toast('没有需要听写的内容'); return; }
     sess = { steps, idx: -1, correct: 0, title, wrongList: [] };
     $('#session').classList.remove('hidden');
     $('#session').setAttribute('aria-hidden', 'false');
+    warmupOcr();
     nextStep();
   }
   function endSession() {
@@ -260,17 +388,25 @@
 
       <div class="ask">
         <span class="tag">${tag} · ${typeLabel(it.type)}</span>
-        <div class="zh">${esc(it.zh)}</div>
-        <div class="hint">请用 Apple Pencil 在下面写出对应的英文</div>
+        <div class="zh">${esc(it.zh)} <button class="speak-btn" id="speakBtn" title="听一下读音">🔊</button></div>
+        <div class="hint">用 Apple Pencil 在下面写出对应的英文</div>
+      </div>
+
+      <div class="draw-tools">
+        <button class="tool-btn active" id="penBtn" data-mode="pen">🖊️ 笔</button>
+        <button class="tool-btn" id="eraserBtn" data-mode="eraser">🧽 橡皮</button>
+        <button class="tool-btn" id="clearBtn">🗑️ 清空</button>
       </div>
 
       <div class="grid-wrap">
         <div class="grid-lines">
-          <textarea id="answer" wrap="off" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="在这里手写…"></textarea>
+          <canvas id="inkCanvas"></canvas>
         </div>
       </div>
 
-      <div class="actions">
+      <div id="cmp" class="cmp hidden"></div>
+
+      <div class="actions" id="stepActions">
         <button class="btn ghost" id="skipBtn">跳过</button>
         <button class="btn" id="submitBtn">对答案</button>
       </div>
@@ -281,23 +417,60 @@
     $('#sessClose').onclick = () => { if (confirm('要退出本次听写吗？')) endSession(); };
     $('#skipBtn').onclick = () => nextStep();
     $('#submitBtn').onclick = submit;
-    const ta = $('#answer');
-    ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
-    ta.focus();
+    $('#speakBtn').onclick = () => speakEn(it.en);
+
+    // 工具切换
+    const setMode = m => {
+      drawState.mode = m;
+      document.querySelectorAll('.tool-btn[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+    };
+    const pb = $('#penBtn'); if (pb) pb.onclick = () => setMode('pen');
+    const eb = $('#eraserBtn'); if (eb) eb.onclick = () => setMode('eraser');
+    const cb = $('#clearBtn'); if (cb) cb.onclick = () => {
+      const c = $('#inkCanvas'); if (c && c._ctx) c._ctx.clearRect(0, 0, c.width, c.height);
+    };
+
+    setupCanvas();
   }
 
-  function submit() {
+  async function submit() {
     const step = sess.steps[sess.idx];
     const it = step.item;
-    const ta = $('#answer');
-    const typed = ta.value.trim();
-    if (!typed) { toast('先写点内容再对答案吧～'); ta.focus(); return; }
+    const canvas = $('#inkCanvas');
+    if (isCanvasEmpty(canvas)) { toast('先写点内容再对答案吧～'); return; }
 
-    const correct = norm(typed) === norm(it.en);
-    showFeedback(step, typed, correct);
+    const btn = $('#submitBtn');
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = '识别中…';
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      toast('识别超时，请手动判对错');
+      showFeedback(step, '(识别超时)', false, true);
+      btn.disabled = false; btn.textContent = orig;
+    }, 60000);
+    try {
+      const typed = await canvasToText();
+      if (done) return;
+      clearTimeout(timer); done = true;
+      btn.disabled = false; btn.textContent = orig;
+      if (!typed) {
+        toast('没识别到内容，再写写看？');
+        return;
+      }
+      const correct = norm(typed) === norm(it.en);
+      showFeedback(step, typed, correct, false);
+    } catch (e) {
+      if (done) return;
+      clearTimeout(timer); done = true;
+      btn.disabled = false; btn.textContent = orig;
+      toast('识别失败（' + (e && e.message || '网络问题') + '），请手动判对错');
+      showFeedback(step, '(识别失败)', false, true);
+    }
   }
 
-  function showFeedback(step, typed, correct) {
+  function showFeedback(step, typed, correct, manual) {
     const it = step.item;
     const fb = $('#fb');
 
@@ -305,27 +478,38 @@
     if (state) sess.correct++;
 
     function render(ok) {
+      const cmp = $('#cmp');
+      if (cmp) {
+        cmp.classList.remove('hidden');
+        cmp.innerHTML = `
+          <div class="feedback ${ok ? 'ok' : 'no'}">
+            <div class="mark">${ok ? '✅ 正确！' : '✏️ 再想想～'}</div>
+            <div class="msg">${esc(ok ? pick(PRAISE) : pick(ENCOURAGE))}</div>
+            <div class="answer">
+              <div class="lbl">正确答案 <button class="speak-mini" id="speakAns" title="读一遍答案">🔊</button></div>
+              <div class="val">${esc(it.en)}</div>
+              ${ok ? '' : (typed && typed.charAt(0) !== '('
+                ? `<div class="youwrite">识别到你写的是：${esc(typed)}</div>`
+                : `<div class="youwrite">（没能自动识别，自己对着答案比一比吧）</div>`)}
+            </div>
+          </div>`;
+      }
       fb.innerHTML = `
-        <div class="feedback ${ok ? 'ok' : 'no'}">
-          <div class="mark">${ok ? '✅ 正确！' : '✏️ 再想想～'}</div>
-          <div class="msg">${esc(ok ? pick(PRAISE) : pick(ENCOURAGE))}</div>
-          <div class="answer">
-            <div class="lbl">正确答案</div>
-            <div class="val">${esc(it.en)}</div>
-            ${ok ? '' : `<div class="youwrite">你写的是：${esc(typed)}</div>`}
-          </div>
-        </div>
         <div class="actions">
-          ${ok ? '' : '<button class="btn ghost" id="iknowBtn">我其实写对了</button>'}
-          <button class="btn big" id="nextBtn">下一题 →</button>
+          ${manual ? '<button class="btn ghost" id="iknowBtn">我写对了</button>' : (ok ? '' : '<button class="btn ghost" id="iknowBtn">我其实写对了</button>')}
+          <button class="btn big" id="nextBtn">${manual ? '我写错了 / 下一题 →' : '下一题 →'}</button>
         </div>`;
+      const sa = $('#speakAns'); if (sa) sa.onclick = () => speakEn(it.en);
       const ik = $('#iknowBtn');
       if (ik) ik.onclick = () => { if (!state) { state = true; sess.correct++; render(true); } };
       $('#nextBtn').onclick = () => commit(step, state);
     }
 
+    const stepActions = $('#stepActions');
+    if (stepActions) stepActions.style.display = 'none';
     render(state);
-    fb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const anchor = $('.grid-wrap') || $('#cmp') || fb;
+    anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function commit(step, correct) {

@@ -121,6 +121,32 @@ main{flex:1;padding:16px 16px 100px;max-width:820px;width:100%;margin:0 auto;}
 }
 .grid-lines textarea::placeholder{color:#c3c8d2;font-size:16px;letter-spacing:0;}
 
+/* 画布书写板（透明覆盖在四线三格上） */
+.grid-lines canvas{
+  display:block;width:100%;height:var(--grid-h);
+  touch-action:none;cursor:crosshair;
+}
+/* 书写工具条 */
+.draw-tools{display:flex;gap:8px;margin:8px 0 4px;}
+.tool-btn{
+  flex:1;border:2px solid var(--line);background:#fff;border-radius:12px;
+  padding:10px 6px;font-size:15px;font-weight:600;color:var(--ink-2);cursor:pointer;
+}
+.tool-btn.active{border-color:var(--primary);background:#fff3e8;color:var(--primary-d);}
+.tool-btn:active{transform:scale(.96);}
+/* 读音按钮 */
+.speak-btn{
+  border:none;background:#fff3e8;color:var(--primary-d);
+  border-radius:999px;width:40px;height:40px;font-size:20px;
+  cursor:pointer;margin-left:8px;vertical-align:middle;line-height:1;
+}
+.speak-btn:active{transform:scale(.9);}
+.speak-mini{
+  border:none;background:transparent;color:var(--primary);
+  font-size:16px;cursor:pointer;margin-left:6px;padding:0;vertical-align:middle;
+}
+.speak-mini:active{transform:scale(.85);}
+
 /* ---------- 听写会话 ---------- */
 .session{position:fixed;inset:0;background:var(--bg);z-index:50;display:flex;flex-direction:column;
   padding:calc(env(safe-area-inset-top,0px) + 10px) 16px calc(env(safe-area-inset-bottom,0px) + 14px);overflow:auto;}
@@ -147,10 +173,12 @@ main{flex:1;padding:16px 16px 100px;max-width:820px;width:100%;margin:0 auto;}
 .feedback.ok .mark{color:var(--green);}
 .feedback.no .mark{color:var(--red);}
 .feedback .msg{font-size:16px;margin-top:6px;line-height:1.5;}
-.feedback .answer{margin-top:12px;background:#fff;border-radius:12px;padding:12px 14px;}
+.feedback .answer{margin-top:12px;background:#fff;border-radius:12px;padding:12px 16px;}
 .feedback .answer .lbl{font-size:12px;color:var(--ink-2);}
-.feedback .answer .val{font-family:"Comic Sans MS","Segoe Print",sans-serif;font-size:24px;letter-spacing:.5px;margin-top:2px;}
-.feedback .youwrite{font-size:14px;color:var(--ink-2);margin-top:8px;}
+.feedback .answer .val{font-family:"Comic Sans MS","Segoe Print",sans-serif;font-size:34px;font-weight:700;letter-spacing:.5px;margin-top:4px;line-height:1.25;word-break:break-word;}
+.feedback .youwrite{font-size:15px;color:var(--ink-2);margin-top:10px;}
+/* 判分对照区：直接贴在画布下方，方便对着笔迹看正确答案 */
+.cmp{margin-top:14px;}
 
 .result{text-align:center;padding:24px 18px;}
 .result .score{font-size:44px;font-weight:800;color:var(--primary-d);}
