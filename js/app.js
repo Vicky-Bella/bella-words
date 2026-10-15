@@ -224,16 +224,42 @@
   /* ---------------- 听写会话 ---------------- */
   let sess = null;
 
-  /* ---- 读音（浏览器内置 TTS） ---- */
-  function speakEn(text) {
-    if (!('speechSynthesis' in window)) { toast('当前设备不支持朗读'); return; }
+  /* ---- 读音（浏览器内置 TTS，针对 iPad 做了兼容处理） ---- */
+  let ttsVoice = null;
+  function pickEnVoice() {
     try {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
+      const vs = window.speechSynthesis.getVoices() || [];
+      return vs.find(v => /en[-_]US/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null;
+    } catch (e) { return null; }
+  }
+  function initTts() {
+    if (!('speechSynthesis' in window)) return;
+    ttsVoice = pickEnVoice();
+    window.speechSynthesis.onvoiceschanged = () => { ttsVoice = pickEnVoice(); };
+    // iPad 首次必须在一个用户手势里“解锁”，否则以后点喇叭没声音
+    document.addEventListener('pointerdown', function prime() {
+      document.removeEventListener('pointerdown', prime);
+      try {
+        const u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0; u.lang = 'en-US';
+        window.speechSynthesis.speak(u);
+        window.speechSynthesis.cancel();
+      } catch (e) {}
+    }, { once: true });
+  }
+  function speakEn(text) {
+    if (!('speechSynthesis' in window)) { toast('这个设备不支持朗读'); return; }
+    try {
+      const syn = window.speechSynthesis;
+      syn.cancel();
+      const u = new SpeechSynthesisUtterance(String(text));
       u.lang = 'en-US';
       u.rate = 0.85;
       u.pitch = 1;
-      window.speechSynthesis.speak(u);
+      u.volume = 1;
+      const v = ttsVoice || pickEnVoice();
+      if (v) { u.voice = v; ttsVoice = v; }
+      syn.speak(u);
     } catch (e) { toast('朗读失败'); }
   }
 
@@ -386,7 +412,7 @@
         <div class="sess-count">${done + 1}/${total}</div>
       </div>
 
-      <div class="ask">
+      <div class="ask" id="askBox">
         <span class="tag">${tag} · ${typeLabel(it.type)}</span>
         <div class="zh">${esc(it.zh)} <button class="speak-btn" id="speakBtn" title="听一下读音">🔊</button></div>
         <div class="hint">用 Apple Pencil 在下面写出对应的英文</div>
@@ -403,8 +429,6 @@
           <canvas id="inkCanvas"></canvas>
         </div>
       </div>
-
-      <div id="cmp" class="cmp hidden"></div>
 
       <div class="actions" id="stepActions">
         <button class="btn ghost" id="skipBtn">跳过</button>
@@ -478,13 +502,13 @@
     if (state) sess.correct++;
 
     function render(ok) {
-      const cmp = $('#cmp');
-      if (cmp) {
-        cmp.classList.remove('hidden');
-        cmp.innerHTML = `
+      // 把“正确答案”放到画布上方的题目区，字迹留在下面，方便上下对照
+      const box = $('#askBox');
+      if (box) {
+        box.classList.add('graded');
+        box.innerHTML = `
           <div class="feedback ${ok ? 'ok' : 'no'}">
             <div class="mark">${ok ? '✅ 正确！' : '✏️ 再想想～'}</div>
-            <div class="msg">${esc(ok ? pick(PRAISE) : pick(ENCOURAGE))}</div>
             <div class="answer">
               <div class="lbl">正确答案 <button class="speak-mini" id="speakAns" title="读一遍答案">🔊</button></div>
               <div class="val">${esc(it.en)}</div>
@@ -492,6 +516,7 @@
                 ? `<div class="youwrite">识别到你写的是：${esc(typed)}</div>`
                 : `<div class="youwrite">（没能自动识别，自己对着答案比一比吧）</div>`)}
             </div>
+            <div class="msg">${esc(ok ? pick(PRAISE) : pick(ENCOURAGE))}</div>
           </div>`;
       }
       fb.innerHTML = `
@@ -508,8 +533,6 @@
     const stepActions = $('#stepActions');
     if (stepActions) stepActions.style.display = 'none';
     render(state);
-    const anchor = $('.grid-wrap') || $('#cmp') || fb;
-    anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function commit(step, correct) {
@@ -783,5 +806,6 @@
   /* ---------------- 启动 ---------------- */
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => go(b.dataset.tab));
   $('#settingsBtn').onclick = openSettings;
+  initTts();
   go('today');
 })();
