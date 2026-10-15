@@ -222,6 +222,26 @@ const Store = (function () {
       return { streak, best: checkin.best, gained, celebration };
     },
 
+    /* ---- 备份 / 恢复：把全部本地数据导出成一个文件，换设备或被清理后可还原 ---- */
+    dumpAll() {
+      const data = {};
+      Object.values(K).forEach(k => {
+        const v = localStorage.getItem(k);
+        if (v !== null) data[k] = v;
+      });
+      return { app: 'bella-words', version: 1, savedAt: new Date().toISOString(), data };
+    },
+    loadAll(dump) {
+      const d = dump && dump.data;
+      if (!d || typeof d !== 'object') throw new Error('备份文件格式不对');
+      let n = 0;
+      Object.values(K).forEach(k => {
+        if (typeof d[k] === 'string') { localStorage.setItem(k, d[k]); n++; }
+      });
+      if (!n) throw new Error('备份文件里没有可用数据');
+      return n;
+    },
+
     resetAll() {
       records = {}; mistakes = {}; log = {};
       write(K.records, records); write(K.mistakes, mistakes); write(K.log, log);

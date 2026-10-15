@@ -781,6 +781,10 @@
         ${numR('单词', 'word')}${numR('词组', 'phrase')}${numR('句子', 'sentence')}
         <div class="sec-title">我的愿望</div>
         <button class="btn ghost" id="editWish" style="width:100%;margin-top:8px">${Store.getCheckin().wish ? '✏️ 修改我的愿望' : '✍️ 写下我的愿望'}</button>
+        <div class="sec-title">数据备份</div>
+        <button class="btn gray" id="exportData" style="width:100%;margin-top:8px">⬇️ 导出备份（存到「文件」App）</button>
+        <button class="btn gray" id="importData" style="width:100%;margin-top:8px">⬆️ 导入备份（选文件恢复）</button>
+        <input type="file" id="importFile" accept="application/json,.json" style="display:none">
         <div class="sec-title">数据</div>
         <button class="btn gray" id="resetData" style="width:100%;margin-top:8px">重置全部学习记录</button>
         <div class="actions" style="margin-top:18px">
@@ -792,6 +796,35 @@
     panel.onclick = e => { if (e.target === panel) closeSettings(); };
     $('#setCancel').onclick = closeSettings;
     $('#editWish').onclick = openWishEditor;
+    $('#exportData').onclick = () => {
+      try {
+        const name = '英语听写备份_' + Scheduler.todayStr() + '.json';
+        const blob = new Blob([JSON.stringify(Store.dumpAll())], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast('已导出：' + name + '（在「文件」App 里）');
+      } catch (e) { toast('导出失败'); }
+    };
+    $('#importData').onclick = () => $('#importFile').click();
+    $('#importFile').onchange = e => {
+      const f = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      const fr = new FileReader();
+      fr.onload = () => {
+        try {
+          const dump = JSON.parse(String(fr.result));
+          if (!confirm('导入后会覆盖当前的打卡、学习记录和错题，确定恢复吗？')) return;
+          Store.loadAll(dump);
+          toast('已恢复，正在重新载入…');
+          setTimeout(() => location.reload(), 900);
+        } catch (err) { toast('备份文件无法识别'); }
+      };
+      fr.readAsText(f);
+    };
     $('#resetData').onclick = () => { if (confirm('确定重置全部学习记录和错题本吗？词库不受影响。')) { Store.resetAll(); toast('已重置'); closeSettings(); go(currentTab); } };
     $('#setSave').onclick = () => {
       const dn = { word: 8, phrase: 2, sentence: 1 }, dr = { word: 8, phrase: 2, sentence: 1 };
