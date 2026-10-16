@@ -32,6 +32,44 @@
       .replace(/\s+/g, ' ')
       .trim();
   }
+  // 编辑距离相似度，0~1
+  function levRatio(a, b) {
+    const m = a.length, n = b.length, max = Math.max(m, n);
+    if (max === 0) return 1;
+    const dp = new Array(n + 1);
+    for (let j = 0; j <= n; j++) dp[j] = j;
+    for (let i = 1; i <= m; i++) {
+      let prev = dp[0]; dp[0] = i;
+      for (let j = 1; j <= n; j++) {
+        const tmp = dp[j];
+        dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+        prev = tmp;
+      }
+    }
+    return 1 - dp[n] / max;
+  }
+  // 识别结果与正确答案的相似度：单字符/单词用编辑距离；多词按词逐个匹配
+  function similarity(a, b) {
+    a = norm(a); b = norm(b);
+    if (a === b) return 1;
+    if (!a || !b) return 0;
+    const aw = a.split(' '), bw = b.split(' ');
+    if (aw.length > 1 || bw.length > 1) {
+      let matched = 0;
+      const used = new Array(bw.length).fill(false);
+      for (const w of aw) {
+        let best = 0, bi = -1;
+        for (let j = 0; j < bw.length; j++) {
+          if (used[j]) continue;
+          const r = levRatio(w, bw[j]);
+          if (r > best) { best = r; bi = j; }
+        }
+        if (bi >= 0) { used[bi] = true; if (best >= 0.8) matched++; }
+      }
+      return matched / Math.max(aw.length, bw.length);
+    }
+    return levRatio(a, b);
+  }
   const typeLabel = Scheduler.typeLabel;
 
   function toast(msg) {
@@ -327,6 +365,9 @@
     const canvas = e.currentTarget;
     const ctx = canvas._ctx;
     const p = canvasPos(e, canvas);
+    // 每次只描当前这一小段，避免 stroke() 重描整条路径导致越写越卡
+    ctx.beginPath();
+    ctx.moveTo(drawState.lastX, drawState.lastY);
     ctx.lineTo(p.x, p.y);
     ctx.stroke();
     drawState.lastX = p.x; drawState.lastY = p.y;
@@ -483,7 +524,7 @@
         toast('没识别到内容，再写写看？');
         return;
       }
-      const correct = norm(typed) === norm(it.en);
+      const correct = similarity(typed, it.en) >= 0.8;
       showFeedback(step, typed, correct, false);
     } catch (e) {
       if (done) return;
