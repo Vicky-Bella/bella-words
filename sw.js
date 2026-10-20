@@ -1,6 +1,6 @@
 /* Service Worker：预缓存全部文件，让 iPad 加到主屏后离线秒开。
    更新 App 后请把下面的版本号 +1，用户下次打开即自动更新。 */
-const CACHE = 'eb-v5';
+const CACHE = 'eb-v6';
 
 const ASSETS = [
   './',
@@ -15,6 +15,12 @@ const ASSETS = [
   './icon-180.png',
   './icon-192.png',
   './icon-512.png',
+  // OCR 引擎（SW 预缓存确保离线也能用）
+  './lib/tesseract/tesseract.min.js',
+  './lib/tesseract/worker.min.js',
+  './lib/tesseract/tesseract-core-lstm.wasm.js',
+  './lib/tesseract/tesseract-core-simd-lstm.wasm.js',
+  './lib/tesseract/eng.traineddata.gz',
 ];
 
 self.addEventListener('install', (e) => {
@@ -43,7 +49,7 @@ self.addEventListener('fetch', (e) => {
           if (res && res.ok) caches.open(CACHE).then((c) => c.put(req, res.clone()));
           return res;
         })
-        .catch(() => hit || caches.match('./index.html'));
+        .catch(() => hit);   // 网络失败就返回缓存里的东西，别把 HTML 塞给 JS 请求
       return hit || net;
     })
   );
