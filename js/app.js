@@ -319,7 +319,8 @@
     ocrReady = (async () => {
       try {
         await waitForTesseract(20000);
-        const base = location.href.replace(/[^/]*$/, '');
+        // 去掉 #hash 和 ?query 再取目录，避免主屏启动时路径拼错
+        const base = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
         const worker = await Tesseract.createWorker('eng', 1, {
           workerPath: base + 'lib/tesseract/worker.min.js',
           corePath: base + 'lib/tesseract/',
@@ -343,6 +344,23 @@
   async function getOcr() {
     warmupOcr();
     return ocrReady;
+  }
+  // 带超时的识别：卡住就丢弃 worker，下次重新初始化，绝不让界面一直等
+  function ocrWithTimeout(url, ms) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        try { if (ocrWorker) ocrWorker.terminate(); } catch (e) {}
+        ocrWorker = null; ocrReady = null;
+        reject(new Error('识别超时'));
+      }, ms);
+      getOcr()
+        .then(worker => {
+          if (!worker) throw new Error('OCR 未就绪');
+          return worker.recognize(url);
+        })
+        .then(({ data }) => { clearTimeout(timer); resolve((data.text || '').trim()); })
+        .catch(e => { clearTimeout(timer); reject(e); });
+    });
   }
 
   /* ---- 画布书写 ---- */
@@ -496,17 +514,6 @@
     tctx.drawImage(canvas, cx, cy, cw, ch, 0, 0, tmp.width, tmp.height);
     return tmp.toDataURL('image/png');
   }
-  function canvasToText() {
-    const url = canvasToImage();
-    if (!url) return Promise.resolve('');
-    return Promise.resolve()
-      .then(() => getOcr())
-      .then(worker => {
-        if (!worker) throw new Error('OCR 未加载');
-        return worker.recognize(url);
-      })
-      .then(({ data }) => (data.text || '').trim());
-  }
 
   function startSession(steps, title) {
     if (!steps.length) { toast('没有需要听写的内容'); return; }
@@ -586,6 +593,8 @@
     };
 
     setupCanvas();
+    // 进题后就在后台预热识别引擎，等点「对答案」时通常已经就绪
+    setTimeout(() => { try { warmupOcr(); } catch (e) {} }, 1200);
   }
 
   async function submit() {
@@ -594,55 +603,45 @@
     const canvas = $('#inkCanvas');
     if (isCanvasEmpty(canvas)) { toast('先写点内容再对答案吧～'); return; }
 
-    const btn = $('#submitBtn');
-    const orig = btn.textContent;
-    btn.disabled = true; btn.textContent = '识别中…';
-    let done = false;
-    const timer = setTimeout(() => {
-      if (done) return;
-      done = true;
-      toast('识别超时，请手动判对错');
-      showFeedback(step, '(识别超时)', false, true);
-      btn.disabled = false; btn.textContent = orig;
-    }, 60000);
+    // 立刻显示答案和三个按钮 —— 不等识别，界面上永远不会有「识别中…」
+    showFeedback(step, '', false, false, true);
+
+    const url = canvasToImage();
+    if (!url) { setOcrHint('（画布是空的）'); return; }
+
     try {
-      const typed = await canvasToText();
-      if (done) return;
-      clearTimeout(timer); done = true;
-      btn.disabled = false; btn.textContent = orig;
-      if (!typed) {
-        // 没识别出内容也不让用户卡住 —— 直接让用户手动判分
-        showFeedback(step, '(没识别出来)', false, true);
-        return;
-      }
-      const correct = similarity(typed, it.en) >= 0.8;
-      showFeedback(step, typed, correct, false);
+      const text = await ocrWithTimeout(url, 40000);
+      if (sess.steps[sess.idx] !== step) return;   // 已经翻到下一题，丢弃结果
+      if (!text) { setOcrHint('（没能识别出内容，自己对照着选吧）'); return; }
+      const ok = similarity(text, it.en) >= 0.8;
+      setOcrHint(`识别到你写的是：<b>${esc(text)}</b>　系统参考：${ok ? '✅ 像是对的' : '✏️ 好像不对'}`, ok);
     } catch (e) {
-      if (done) return;
-      clearTimeout(timer); done = true;
-      btn.disabled = false; btn.textContent = orig;
-      toast('识别失败（' + (e && e.message || '网络问题') + '），请手动判对错');
-      showFeedback(step, '(识别失败)', false, true);
+      if (sess.steps[sess.idx] !== step) return;
+      setOcrHint('（自动识别没成功，自己对照着选吧）');
     }
   }
 
-  function showFeedback(step, typed, correct, manual) {
+  function showFeedback(step, typed, correct, manual, pending) {
     const it = step.item;
     const fb = $('#fb');
+    const mark = pending ? '📖 正确答案'
+      : (manual ? '🤔 没能自动判分' : (correct ? '✅ 系统判定：正确' : '✏️ 系统判定：错误'));
+    const hint = pending ? '后台正在识别…（不影响你现在判分）'
+      : (!manual && typed && typed.charAt(0) !== '('
+        ? `识别到你写的是：<b>${esc(typed)}</b>`
+        : '（自己对着答案比一比，再选下面的按钮）');
 
     // 系统判定只作参考，最终由用户点按钮决定
     const box = $('#askBox');
     if (box) {
       box.classList.add('graded');
       box.innerHTML = `
-        <div class="feedback ${correct ? 'ok' : 'no'}">
-          <div class="mark">${manual ? '🤔 没能自动判分' : (correct ? '✅ 系统判定：正确' : '✏️ 系统判定：错误')}</div>
+        <div class="feedback ${pending ? '' : (correct ? 'ok' : 'no')}">
+          <div class="mark">${mark}</div>
           <div class="answer">
             <div class="lbl">正确答案 <button class="speak-mini" id="speakAns" title="读一遍答案">🔊</button></div>
             <div class="val">${esc(it.en)}</div>
-            ${(!manual && typed && typed.charAt(0) !== '(')
-              ? `<div class="youwrite">识别到你写的是：${esc(typed)}</div>`
-              : `<div class="youwrite">（自己对着答案比一比，再选下面的按钮）</div>`}
+            <div class="youwrite" id="ocrHint">${hint}</div>
           </div>
         </div>`;
       const sa = $('#speakAns'); if (sa) sa.onclick = () => speakEn(it.en);
@@ -666,6 +665,15 @@
 
     const stepActions = $('#stepActions');
     if (stepActions) stepActions.style.display = 'none';
+  }
+
+  // 后台识别结果回填（只做提示，不影响用户已点的按钮）
+  function setOcrHint(html, suggested) {
+    const el = $('#ocrHint');
+    if (!el) return;
+    el.innerHTML = html;
+    const target = suggested === true ? $('#okBtn') : (suggested === false ? $('#noBtn') : null);
+    if (target) target.classList.add('suggest');
   }
 
   function commit(step, correct) {
