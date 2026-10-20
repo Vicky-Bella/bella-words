@@ -303,11 +303,22 @@
 
   /* ---- OCR（Tesseract.js）---- */
   let ocrWorker = null, ocrReady = null;
+  // 等 tesseract.min.js 加载完再初始化（最多等 20 秒）
+  function waitForTesseract(timeout) {
+    return new Promise((resolve, reject) => {
+      if (window.Tesseract) { resolve(); return; }
+      const t0 = Date.now();
+      const id = setInterval(() => {
+        if (window.Tesseract) { clearInterval(id); resolve(); }
+        else if (Date.now() - t0 > timeout) { clearInterval(id); reject(new Error('OCR 脚本没加载出来')); }
+      }, 200);
+    });
+  }
   function warmupOcr() {
     if (ocrWorker || ocrReady) return;
-    if (!window.Tesseract) { return; }
     ocrReady = (async () => {
       try {
+        await waitForTesseract(20000);
         const base = location.href.replace(/[^/]*$/, '');
         const worker = await Tesseract.createWorker('eng', 1, {
           workerPath: base + 'lib/tesseract/worker.min.js',
@@ -318,14 +329,16 @@
         await worker.setParameters({
           tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.!? -,;",
           preserve_interword_spaces: '1',
+          tessedit_pageseg_mode: '7',   // 单行文本，比默认的整页分析准得多
         });
         ocrWorker = worker;
         return worker;
       } catch (e) {
-        ocrReady = null;
+        ocrReady = null;   // 失败后允许下次重试
         throw e;
       }
     })();
+    ocrReady.catch(() => {});   // 避免未处理的 Promise 报错
   }
   async function getOcr() {
     warmupOcr();
@@ -333,48 +346,90 @@
   }
 
   /* ---- 画布书写 ---- */
-  const drawState = { mode: 'pen', drawing: false, lastX: 0, lastY: 0 };
+  const drawState = {
+    mode: 'pen', drawing: false,
+    rect: null,                 // 缓存的画布位置，避免每次移动都触发布局重排
+    lastX: 0, lastY: 0,
+    queue: [],                  // 本帧待绘制的采样点
+    raf: 0,
+  };
   function canvasPos(e, canvas) {
-    const r = canvas.getBoundingClientRect();
+    const r = drawState.rect || canvas.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
-  function onDrawDown(e) {
-    const canvas = e.currentTarget;
-    const ctx = canvas._ctx;
-    if (!ctx) return;
-    canvas.setPointerCapture(e.pointerId);
-    drawState.drawing = true;
-    const p = canvasPos(e, canvas);
-    drawState.lastX = p.x; drawState.lastY = p.y;
+  function applyPenStyle(ctx) {
     if (drawState.mode === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
       ctx.lineWidth = 34;
     } else {
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = '#1b1f2a';
-      ctx.lineWidth = 2.6;
+      ctx.lineWidth = 3;
     }
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  function drawSegment(ctx, x0, y0, x1, y1) {
     ctx.beginPath();
-    ctx.moveTo(p.x, p.y);
-    ctx.lineTo(p.x + 0.1, p.y + 0.1);
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
     ctx.stroke();
+  }
+  // 把本帧攒下的采样点一次性画完（每个采样点只画一小段，成本恒定）
+  function flushQueue() {
+    drawState.raf = 0;
+    const canvas = $('#inkCanvas');
+    const ctx = canvas && canvas._ctx;
+    const q = drawState.queue;
+    drawState.queue = [];
+    if (!ctx || !q.length) return;
+    applyPenStyle(ctx);
+    let lx = drawState.lastX, ly = drawState.lastY;
+    for (let i = 0; i < q.length; i++) {
+      drawSegment(ctx, lx, ly, q[i].x, q[i].y);
+      lx = q[i].x; ly = q[i].y;
+    }
+    drawState.lastX = lx; drawState.lastY = ly;
+  }
+  function scheduleFlush() {
+    if (drawState.raf) return;
+    drawState.raf = requestAnimationFrame(flushQueue);
+  }
+  function flushNow() {
+    if (drawState.raf) { cancelAnimationFrame(drawState.raf); drawState.raf = 0; }
+    flushQueue();
+  }
+  function onDrawDown(e) {
+    const canvas = e.currentTarget;
+    const ctx = canvas._ctx;
+    if (!ctx) return;
+    drawState.rect = canvas.getBoundingClientRect();   // 整笔只取一次
+    canvas.setPointerCapture(e.pointerId);
+    drawState.drawing = true;
+    const p = canvasPos(e, canvas);
+    drawState.lastX = p.x; drawState.lastY = p.y;
+    drawState.queue = [];
+    applyPenStyle(ctx);
+    drawSegment(ctx, p.x, p.y, p.x + 0.1, p.y + 0.1);  // 落笔点
     e.preventDefault();
   }
   function onDrawMove(e) {
     if (!drawState.drawing) return;
     const canvas = e.currentTarget;
-    const ctx = canvas._ctx;
-    const p = canvasPos(e, canvas);
-    // 每次只描当前这一小段，避免 stroke() 重描整条路径导致越写越卡
-    ctx.beginPath();
-    ctx.moveTo(drawState.lastX, drawState.lastY);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    drawState.lastX = p.x; drawState.lastY = p.y;
+    // iPad 会把多个采样点合并成一个事件，取出来补全，笔迹才不虚
+    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+    const list = evs && evs.length ? evs : [e];
+    for (let i = 0; i < list.length; i++) drawState.queue.push(canvasPos(list[i], canvas));
+    scheduleFlush();
     e.preventDefault();
   }
   function onDrawUp(e) {
+    if (!drawState.drawing) return;
+    flushNow();
     drawState.drawing = false;
+    drawState.rect = null;
+    drawState.queue = [];
+    if (e && e.preventDefault) e.preventDefault();
   }
   function setupCanvas() {
     const canvas = $('#inkCanvas');
@@ -388,11 +443,12 @@
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     canvas._ctx = ctx;
-    canvas.addEventListener('pointerdown', onDrawDown);
-    canvas.addEventListener('pointermove', onDrawMove);
-    canvas.addEventListener('pointerup', onDrawUp);
-    canvas.addEventListener('pointercancel', onDrawUp);
-    canvas.addEventListener('pointerleave', onDrawUp);
+    const opt = { passive: false };
+    canvas.addEventListener('pointerdown', onDrawDown, opt);
+    canvas.addEventListener('pointermove', onDrawMove, opt);
+    canvas.addEventListener('pointerup', onDrawUp, opt);
+    canvas.addEventListener('pointercancel', onDrawUp, opt);
+    // 注意：不能用 pointerleave 收笔 —— 手指稍一滑出边缘就断笔，笔画会丢
   }
   function isCanvasEmpty(canvas) {
     if (!canvas || !canvas._ctx) return true;
@@ -400,22 +456,56 @@
     for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
     return true;
   }
+  // 找出笔迹的包围盒，只把写字的区域送去识别（大图里的小字识别率极低）
+  function inkBounds(canvas) {
+    const w = canvas.width, h = canvas.height;
+    const d = canvas._ctx.getImageData(0, 0, w, h).data;
+    let minX = w, minY = h, maxX = -1, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (d[(y * w + x) * 4 + 3] !== 0) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < 0) return null;
+    return { minX, minY, maxX, maxY };
+  }
+  function canvasToImage() {
+    const canvas = $('#inkCanvas');
+    const b = inkBounds(canvas);
+    if (!b) return '';
+    const pad = Math.round(canvas.height * 0.06);
+    const cx = Math.max(0, b.minX - pad);
+    const cy = Math.max(0, b.minY - pad);
+    const cw = Math.min(canvas.width - cx, b.maxX - b.minX + 1 + pad * 2);
+    const ch = Math.min(canvas.height - cy, b.maxY - b.minY + 1 + pad * 2);
+    // 放大到高约 120px：Tesseract 对太小的字几乎认不出来
+    const scale = Math.min(4, Math.max(1, 120 / ch));
+    const tmp = document.createElement('canvas');
+    tmp.width = Math.max(1, Math.round(cw * scale));
+    tmp.height = Math.max(1, Math.round(ch * scale));
+    const tctx = tmp.getContext('2d');
+    tctx.fillStyle = '#ffffff';
+    tctx.fillRect(0, 0, tmp.width, tmp.height);
+    tctx.imageSmoothingEnabled = true;
+    tctx.imageSmoothingQuality = 'high';
+    tctx.drawImage(canvas, cx, cy, cw, ch, 0, 0, tmp.width, tmp.height);
+    return tmp.toDataURL('image/png');
+  }
   function canvasToText() {
-    return new Promise((resolve, reject) => {
-      const canvas = $('#inkCanvas');
-      const tmp = document.createElement('canvas');
-      tmp.width = canvas.width; tmp.height = canvas.height;
-      const tctx = tmp.getContext('2d');
-      tctx.fillStyle = '#ffffff';
-      tctx.fillRect(0, 0, tmp.width, tmp.height);
-      tctx.drawImage(canvas, 0, 0);
-      const url = tmp.toDataURL('image/png');
-      getOcr().then(async worker => {
+    const url = canvasToImage();
+    if (!url) return Promise.resolve('');
+    return Promise.resolve()
+      .then(() => getOcr())
+      .then(worker => {
         if (!worker) throw new Error('OCR 未加载');
-        const { data } = await worker.recognize(url);
-        resolve((data.text || '').trim());
-      }).catch(reject);
-    });
+        return worker.recognize(url);
+      })
+      .then(({ data }) => (data.text || '').trim());
   }
 
   function startSession(steps, title) {
@@ -521,7 +611,8 @@
       clearTimeout(timer); done = true;
       btn.disabled = false; btn.textContent = orig;
       if (!typed) {
-        toast('没识别到内容，再写写看？');
+        // 没识别出内容也不让用户卡住 —— 直接让用户手动判分
+        showFeedback(step, '(没识别出来)', false, true);
         return;
       }
       const correct = similarity(typed, it.en) >= 0.8;
@@ -539,41 +630,42 @@
     const it = step.item;
     const fb = $('#fb');
 
-    let state = correct;
-    if (state) sess.correct++;
-
-    function render(ok) {
-      // 把“正确答案”放到画布上方的题目区，字迹留在下面，方便上下对照
-      const box = $('#askBox');
-      if (box) {
-        box.classList.add('graded');
-        box.innerHTML = `
-          <div class="feedback ${ok ? 'ok' : 'no'}">
-            <div class="mark">${ok ? '✅ 正确！' : '✏️ 再想想～'}</div>
-            <div class="answer">
-              <div class="lbl">正确答案 <button class="speak-mini" id="speakAns" title="读一遍答案">🔊</button></div>
-              <div class="val">${esc(it.en)}</div>
-              ${ok ? '' : (typed && typed.charAt(0) !== '('
-                ? `<div class="youwrite">识别到你写的是：${esc(typed)}</div>`
-                : `<div class="youwrite">（没能自动识别，自己对着答案比一比吧）</div>`)}
-            </div>
-            <div class="msg">${esc(ok ? pick(PRAISE) : pick(ENCOURAGE))}</div>
-          </div>`;
-      }
-      fb.innerHTML = `
-        <div class="actions">
-          ${manual ? '<button class="btn ghost" id="iknowBtn">我写对了</button>' : (ok ? '' : '<button class="btn ghost" id="iknowBtn">我其实写对了</button>')}
-          <button class="btn big" id="nextBtn">${manual ? '我写错了 / 下一题 →' : '下一题 →'}</button>
+    // 系统判定只作参考，最终由用户点按钮决定
+    const box = $('#askBox');
+    if (box) {
+      box.classList.add('graded');
+      box.innerHTML = `
+        <div class="feedback ${correct ? 'ok' : 'no'}">
+          <div class="mark">${manual ? '🤔 没能自动判分' : (correct ? '✅ 系统判定：正确' : '✏️ 系统判定：错误')}</div>
+          <div class="answer">
+            <div class="lbl">正确答案 <button class="speak-mini" id="speakAns" title="读一遍答案">🔊</button></div>
+            <div class="val">${esc(it.en)}</div>
+            ${(!manual && typed && typed.charAt(0) !== '(')
+              ? `<div class="youwrite">识别到你写的是：${esc(typed)}</div>`
+              : `<div class="youwrite">（自己对着答案比一比，再选下面的按钮）</div>`}
+          </div>
         </div>`;
       const sa = $('#speakAns'); if (sa) sa.onclick = () => speakEn(it.en);
-      const ik = $('#iknowBtn');
-      if (ik) ik.onclick = () => { if (!state) { state = true; sess.correct++; render(true); } };
-      $('#nextBtn').onclick = () => commit(step, state);
+    }
+
+    // 三个按钮：点哪个立刻生效，语义互不干扰
+    fb.innerHTML = `
+      <div class="actions three">
+        <button class="btn ghost" id="okBtn">✅ 我写对了</button>
+        <button class="btn ghost" id="noBtn">❌ 我写错了</button>
+        <button class="btn ghost" id="skipBtn">⏭ 跳过</button>
+      </div>`;
+    $('#okBtn').onclick = () => finish(true);
+    $('#noBtn').onclick = () => finish(false);
+    $('#skipBtn').onclick = () => nextStep();
+
+    function finish(ok) {
+      if (ok) sess.correct++;
+      commit(step, ok);
     }
 
     const stepActions = $('#stepActions');
     if (stepActions) stepActions.style.display = 'none';
-    render(state);
   }
 
   function commit(step, correct) {
