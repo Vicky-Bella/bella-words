@@ -302,6 +302,8 @@
   }
 
   /* ---- OCR（Tesseract.js）---- */
+  // 手写自动识别判分：默认关闭。改成 true 就会用 Tesseract 识别笔迹并给出参考。
+  const AUTO_JUDGE = false;
   let ocrWorker = null, ocrReady = null;
   // 等 tesseract.min.js 加载完再初始化（最多等 20 秒）
   function waitForTesseract(timeout) {
@@ -363,156 +365,155 @@
     });
   }
 
-  /* ---- 画布书写 ---- */
-  const drawState = {
+  /* ---- 手写笔迹（SVG：每一笔是一条 path，GPU 渲染，没有位图内存压力） ---- */
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const PEN_W = 3;
+  const ink = {
     mode: 'pen', drawing: false,
-    rect: null,                 // 缓存的画布位置，避免每次移动都触发布局重排
+    stroke: null,        // 当前正在写的 <path>
+    d: '',               // 当前 path 的 d 字符串
     lastX: 0, lastY: 0,
-    queue: [],                  // 本帧待绘制的采样点
-    raf: 0,
+    rect: null,          // 落笔时缓存一次，避免每次移动都触发布局重排
   };
-  function canvasPos(e, canvas) {
-    const r = drawState.rect || canvas.getBoundingClientRect();
+  function inkPos(e) {
+    const board = $('#inkBoard');
+    const r = ink.rect || (board ? board.getBoundingClientRect() : { left: 0, top: 0 });
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
-  function applyPenStyle(ctx) {
-    if (drawState.mode === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineWidth = 34;
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = '#1b1f2a';
-      ctx.lineWidth = 3;
+  function inkClear() {
+    const svg = $('#inkSvg');
+    if (svg) while (svg.firstChild) svg.removeChild(svg.firstChild);
+  }
+  function inkUndo() {
+    const svg = $('#inkSvg');
+    if (svg && svg.lastChild) svg.removeChild(svg.lastChild);
+  }
+  function inkIsEmpty() {
+    const svg = $('#inkSvg');
+    return !svg || !svg.childElementCount;
+  }
+  // 橡皮：划过哪一笔就整笔擦掉（SVG 里没法按像素擦，整笔擦除更可控）
+  function inkEraseAt(x, y) {
+    const svg = $('#inkSvg'); if (!svg) return;
+    const kids = Array.prototype.slice.call(svg.children);
+    for (let i = kids.length - 1; i >= 0; i--) {
+      let bb;
+      try { bb = kids[i].getBBox(); } catch (err) { continue; }
+      const pad = 12;
+      if (x >= bb.x - pad && x <= bb.x + bb.width + pad &&
+          y >= bb.y - pad && y <= bb.y + bb.height + pad) {
+        svg.removeChild(kids[i]);
+      }
     }
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
   }
-  function drawSegment(ctx, x0, y0, x1, y1) {
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.stroke();
-  }
-  // 把本帧攒下的采样点一次性画完（每个采样点只画一小段，成本恒定）
-  function flushQueue() {
-    drawState.raf = 0;
-    const canvas = $('#inkCanvas');
-    const ctx = canvas && canvas._ctx;
-    const q = drawState.queue;
-    drawState.queue = [];
-    if (!ctx || !q.length) return;
-    applyPenStyle(ctx);
-    let lx = drawState.lastX, ly = drawState.lastY;
-    for (let i = 0; i < q.length; i++) {
-      drawSegment(ctx, lx, ly, q[i].x, q[i].y);
-      lx = q[i].x; ly = q[i].y;
-    }
-    drawState.lastX = lx; drawState.lastY = ly;
-  }
-  function scheduleFlush() {
-    if (drawState.raf) return;
-    drawState.raf = requestAnimationFrame(flushQueue);
-  }
-  function flushNow() {
-    if (drawState.raf) { cancelAnimationFrame(drawState.raf); drawState.raf = 0; }
-    flushQueue();
-  }
-  function onDrawDown(e) {
-    const canvas = e.currentTarget;
-    const ctx = canvas._ctx;
-    if (!ctx) return;
-    drawState.rect = canvas.getBoundingClientRect();   // 整笔只取一次
-    canvas.setPointerCapture(e.pointerId);
-    drawState.drawing = true;
-    const p = canvasPos(e, canvas);
-    drawState.lastX = p.x; drawState.lastY = p.y;
-    drawState.queue = [];
-    applyPenStyle(ctx);
-    drawSegment(ctx, p.x, p.y, p.x + 0.1, p.y + 0.1);  // 落笔点
+  function inkDown(e) {
+    const board = e.currentTarget;
+    ink.rect = board.getBoundingClientRect();     // 整笔只取一次
+    if (board.setPointerCapture) board.setPointerCapture(e.pointerId);
+    ink.drawing = true;
+    const p = inkPos(e);
+    ink.lastX = p.x; ink.lastY = p.y;
+    if (ink.mode === 'eraser') { inkEraseAt(p.x, p.y); e.preventDefault(); return; }
+    const svg = $('#inkSvg'); if (!svg) return;
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', '#1b1f2a');
+    path.setAttribute('stroke-width', PEN_W);
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    ink.d = 'M ' + p.x.toFixed(1) + ' ' + p.y.toFixed(1);
+    path.setAttribute('d', ink.d);
+    svg.appendChild(path);
+    ink.stroke = path;
     e.preventDefault();
   }
-  function onDrawMove(e) {
-    if (!drawState.drawing) return;
-    const canvas = e.currentTarget;
+  // 增量追加二次贝塞尔：只做字符串拼接（成本恒定），圆头圆角衔接平滑
+  function inkMoveTo(p) {
+    const path = ink.stroke; if (!path) return;
+    const mx = (ink.lastX + p.x) / 2, my = (ink.lastY + p.y) / 2;
+    ink.d += ' Q ' + ink.lastX.toFixed(1) + ' ' + ink.lastY.toFixed(1) +
+             ' ' + mx.toFixed(1) + ' ' + my.toFixed(1);
+    path.setAttribute('d', ink.d);
+    ink.lastX = p.x; ink.lastY = p.y;
+  }
+  function inkMove(e) {
+    if (!ink.drawing) return;
     // iPad 会把多个采样点合并成一个事件，取出来补全，笔迹才不虚
     const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
     const list = evs && evs.length ? evs : [e];
-    for (let i = 0; i < list.length; i++) drawState.queue.push(canvasPos(list[i], canvas));
-    scheduleFlush();
+    for (let i = 0; i < list.length; i++) {
+      const p = inkPos(list[i]);
+      if (ink.mode === 'eraser') inkEraseAt(p.x, p.y);
+      else inkMoveTo(p);
+    }
     e.preventDefault();
   }
-  function onDrawUp(e) {
-    if (!drawState.drawing) return;
-    flushNow();
-    drawState.drawing = false;
-    drawState.rect = null;
-    drawState.queue = [];
+  function inkUp(e) {
+    if (!ink.drawing) return;
+    ink.drawing = false;
+    ink.rect = null;
+    if (ink.stroke) {
+      ink.d += ' L ' + ink.lastX.toFixed(1) + ' ' + ink.lastY.toFixed(1);
+      ink.stroke.setAttribute('d', ink.d);
+    }
+    ink.stroke = null;
+    ink.d = '';
     if (e && e.preventDefault) e.preventDefault();
   }
-  function setupCanvas() {
-    const canvas = $('#inkCanvas');
-    if (!canvas) return;
-    const r = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(r.width * dpr));
-    canvas.height = Math.max(1, Math.round(r.height * dpr));
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    canvas._ctx = ctx;
+  function setupInk() {
+    const board = $('#inkBoard');
+    const svg = $('#inkSvg');
+    if (!board || !svg) return;
+    // 不设 viewBox：用户坐标 = CSS 像素，与指针坐标 1:1 对应，无需 dpr 缩放
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
     const opt = { passive: false };
-    canvas.addEventListener('pointerdown', onDrawDown, opt);
-    canvas.addEventListener('pointermove', onDrawMove, opt);
-    canvas.addEventListener('pointerup', onDrawUp, opt);
-    canvas.addEventListener('pointercancel', onDrawUp, opt);
-    // 注意：不能用 pointerleave 收笔 —— 手指稍一滑出边缘就断笔，笔画会丢
+    board.addEventListener('pointerdown', inkDown, opt);
+    board.addEventListener('pointermove', inkMove, opt);
+    board.addEventListener('pointerup', inkUp, opt);
+    board.addEventListener('pointercancel', inkUp, opt);
   }
-  function isCanvasEmpty(canvas) {
-    if (!canvas || !canvas._ctx) return true;
-    const data = canvas._ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
-    return true;
-  }
-  // 找出笔迹的包围盒，只把写字的区域送去识别（大图里的小字识别率极低）
-  function inkBounds(canvas) {
-    const w = canvas.width, h = canvas.height;
-    const d = canvas._ctx.getImageData(0, 0, w, h).data;
-    let minX = w, minY = h, maxX = -1, maxY = -1;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (d[(y * w + x) * 4 + 3] !== 0) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-    if (maxX < 0) return null;
-    return { minX, minY, maxX, maxY };
-  }
-  function canvasToImage() {
-    const canvas = $('#inkCanvas');
-    const b = inkBounds(canvas);
-    if (!b) return '';
-    const pad = Math.round(canvas.height * 0.06);
-    const cx = Math.max(0, b.minX - pad);
-    const cy = Math.max(0, b.minY - pad);
-    const cw = Math.min(canvas.width - cx, b.maxX - b.minX + 1 + pad * 2);
-    const ch = Math.min(canvas.height - cy, b.maxY - b.minY + 1 + pad * 2);
-    // 放大到高约 120px：Tesseract 对太小的字几乎认不出来
-    const scale = Math.min(4, Math.max(1, 120 / ch));
-    const tmp = document.createElement('canvas');
-    tmp.width = Math.max(1, Math.round(cw * scale));
-    tmp.height = Math.max(1, Math.round(ch * scale));
-    const tctx = tmp.getContext('2d');
-    tctx.fillStyle = '#ffffff';
-    tctx.fillRect(0, 0, tmp.width, tmp.height);
-    tctx.imageSmoothingEnabled = true;
-    tctx.imageSmoothingQuality = 'high';
-    tctx.drawImage(canvas, cx, cy, cw, ch, 0, 0, tmp.width, tmp.height);
-    return tmp.toDataURL('image/png');
+  // 把笔迹转成 PNG（只有开启自动识别时才会用到）
+  function inkToImage() {
+    const svg = $('#inkSvg');
+    if (!svg || !svg.childElementCount) return Promise.resolve('');
+    let bb;
+    try { bb = svg.getBBox(); } catch (e) { return Promise.resolve(''); }
+    if (!bb.width && !bb.height) return Promise.resolve('');
+    const pad = Math.max(bb.height * 0.12, 10);
+    const vb = {
+      x: bb.x - pad, y: bb.y - pad,
+      w: Math.max(bb.width + pad * 2, 1),
+      h: Math.max(bb.height + pad * 2, 1),
+    };
+    const scale = Math.min(4, Math.max(1, 120 / vb.h));   // 放大到高约 120px
+    const w = Math.round(vb.w * scale), h = Math.round(vb.h * scale);
+    const clone = svg.cloneNode(true);
+    clone.removeAttribute('id');
+    clone.setAttribute('xmlns', SVG_NS);
+    clone.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h);
+    clone.setAttribute('width', w);
+    clone.setAttribute('height', h);
+    const bg = document.createElementNS(SVG_NS, 'rect');
+    bg.setAttribute('x', vb.x); bg.setAttribute('y', vb.y);
+    bg.setAttribute('width', vb.w); bg.setAttribute('height', vb.h);
+    bg.setAttribute('fill', '#ffffff');
+    clone.insertBefore(bg, clone.firstChild);
+    const src = 'data:image/svg+xml;charset=utf-8,' +
+      encodeURIComponent(new XMLSerializer().serializeToString(clone));
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const c = cv.getContext('2d');
+        c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+        c.drawImage(img, 0, 0, w, h);
+        resolve(cv.toDataURL('image/png'));
+      };
+      img.onerror = () => reject(new Error('笔迹转图片失败'));
+      img.src = src;
+    });
   }
 
   function startSession(steps, title) {
@@ -559,12 +560,13 @@
       <div class="draw-tools">
         <button class="tool-btn active" id="penBtn" data-mode="pen">🖊️ 笔</button>
         <button class="tool-btn" id="eraserBtn" data-mode="eraser">🧽 橡皮</button>
+        <button class="tool-btn" id="undoBtn">↩️ 撤销</button>
         <button class="tool-btn" id="clearBtn">🗑️ 清空</button>
       </div>
 
       <div class="grid-wrap">
-        <div class="grid-lines">
-          <canvas id="inkCanvas"></canvas>
+        <div class="grid-lines" id="inkBoard">
+          <svg id="inkSvg" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
       </div>
 
@@ -583,65 +585,58 @@
 
     // 工具切换
     const setMode = m => {
-      drawState.mode = m;
+      ink.mode = m;
       document.querySelectorAll('.tool-btn[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
     };
     const pb = $('#penBtn'); if (pb) pb.onclick = () => setMode('pen');
     const eb = $('#eraserBtn'); if (eb) eb.onclick = () => setMode('eraser');
-    const cb = $('#clearBtn'); if (cb) cb.onclick = () => {
-      const c = $('#inkCanvas'); if (c && c._ctx) c._ctx.clearRect(0, 0, c.width, c.height);
-    };
+    const ub = $('#undoBtn'); if (ub) ub.onclick = inkUndo;
+    const cb = $('#clearBtn'); if (cb) cb.onclick = inkClear;
 
-    setupCanvas();
-    // 进题后就在后台预热识别引擎，等点「对答案」时通常已经就绪
-    setTimeout(() => { try { warmupOcr(); } catch (e) {} }, 1200);
+    setupInk();
+    // OCR 默认关闭；只有打开开关时才在进题后预热引擎
+    if (AUTO_JUDGE) setTimeout(() => { try { warmupOcr(); } catch (e) {} }, 1200);
   }
 
   async function submit() {
     const step = sess.steps[sess.idx];
     const it = step.item;
-    const canvas = $('#inkCanvas');
-    if (isCanvasEmpty(canvas)) { toast('先写点内容再对答案吧～'); return; }
+    if (inkIsEmpty()) { toast('先写点内容再对答案吧～'); return; }
 
-    // 立刻显示答案和三个按钮 —— 不等识别，界面上永远不会有「识别中…」
-    showFeedback(step, '', false, false, true);
+    // 立刻出正确答案和三个按钮，不等任何识别
+    showFeedback(step);
+    if (!AUTO_JUDGE) return;          // 自动判分默认关闭，到此为止
 
-    const url = canvasToImage();
-    if (!url) { setOcrHint('（画布是空的）'); return; }
+    let url = '';
+    try { url = await inkToImage(); } catch (e) { url = ''; }
+    if (!url) { setOcrHint('（笔迹读取失败，自己对照着选吧）'); return; }
 
     try {
       const text = await ocrWithTimeout(url, 40000);
       if (sess.steps[sess.idx] !== step) return;   // 已经翻到下一题，丢弃结果
       if (!text) { setOcrHint('（没能识别出内容，自己对照着选吧）'); return; }
       const ok = similarity(text, it.en) >= 0.8;
-      setOcrHint(`识别到你写的是：<b>${esc(text)}</b>　系统参考：${ok ? '✅ 像是对的' : '✏️ 好像不对'}`, ok);
+      setOcrHint('识别到你写的是：<b>' + esc(text) + '</b>', ok);
     } catch (e) {
       if (sess.steps[sess.idx] !== step) return;
       setOcrHint('（自动识别没成功，自己对照着选吧）');
     }
   }
 
-  function showFeedback(step, typed, correct, manual, pending) {
+  function showFeedback(step) {
     const it = step.item;
     const fb = $('#fb');
-    const mark = pending ? '📖 正确答案'
-      : (manual ? '🤔 没能自动判分' : (correct ? '✅ 系统判定：正确' : '✏️ 系统判定：错误'));
-    const hint = pending ? '后台正在识别…（不影响你现在判分）'
-      : (!manual && typed && typed.charAt(0) !== '('
-        ? `识别到你写的是：<b>${esc(typed)}</b>`
-        : '（自己对着答案比一比，再选下面的按钮）');
 
-    // 系统判定只作参考，最终由用户点按钮决定
+    // 正确答案显示在画布上方，你的笔迹留在下面，方便上下对照
     const box = $('#askBox');
     if (box) {
       box.classList.add('graded');
       box.innerHTML = `
-        <div class="feedback ${pending ? '' : (correct ? 'ok' : 'no')}">
-          <div class="mark">${mark}</div>
+        <div class="feedback">
           <div class="answer">
             <div class="lbl">正确答案 <button class="speak-mini" id="speakAns" title="读一遍答案">🔊</button></div>
             <div class="val">${esc(it.en)}</div>
-            <div class="youwrite" id="ocrHint">${hint}</div>
+            <div class="youwrite" id="ocrHint">${AUTO_JUDGE ? '后台正在识别…（不影响你现在判分）' : '自己对着上面写的一笔笔比一比'}</div>
           </div>
         </div>`;
       const sa = $('#speakAns'); if (sa) sa.onclick = () => speakEn(it.en);
