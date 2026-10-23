@@ -130,14 +130,15 @@
 
     const newSteps = [], reviewSteps = [];
     const rows = TYPES.map(t => {
-      const remain = Math.max(0, s.dailyNew[t] - (log.newCount[t] || 0));
-      const newList = Scheduler.newItems(t, remain);
-      const revList = revByType[t].slice(0, s.dailyReview[t]);
+      const remainNew = Math.max(0, s.dailyNew[t] - (log.newCount[t] || 0));
+      const remainRev = Math.max(0, s.dailyReview[t] - (log.reviewCount[t] || 0));
+      const newList = Scheduler.newItems(t, remainNew);
+      const revList = revByType[t].slice(0, remainRev);
       newList.forEach(it => newSteps.push({ item: it, mode: 'new' }));
       revList.forEach(r => reviewSteps.push({ item: r, mode: 'review' }));
       return `<div class="task-row">
         <div class="n">${typeLabel(t)}</div>
-        <div class="count">新学 <b>${newList.length}</b> / ${s.dailyNew[t]} · 复习 <b>${revList.length}</b></div>
+        <div class="count">新学 <b>${newList.length}</b> / ${s.dailyNew[t]} · 复习 <b>${revList.length}</b> / ${s.dailyReview[t]}</div>
       </div>`;
     }).join('');
 
