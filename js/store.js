@@ -183,6 +183,17 @@ const Store = (function () {
       return r;
     },
 
+    // 跳过：推到明天再复习，不改掌握度、不进错题本
+    postpone(item, date) {
+      const k = keyOf(item);
+      const r = records[k];
+      if (!r) return;
+      r.nextDue = Scheduler.addDays(date, 1);
+      records[k] = r;
+      write(K.records, records);
+      return r;
+    },
+
     // 手动把某条移出错题本
     removeMistake(k) { delete mistakes[k]; write(K.mistakes, mistakes); },
 

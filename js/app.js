@@ -2,6 +2,8 @@
 (function () {
   const $ = (s, r) => (r || document).querySelector(s);
   const view = $('#view');
+  // 和 sw.js 里的 CACHE 保持一致，用来确认 iPad 上跑的是哪个版本
+  const APP_VERSION = 'eb-v11';
 
   const PRAISE = [
     '太棒了！完全正确！🎉',
@@ -580,7 +582,10 @@
     `;
 
     $('#sessClose').onclick = () => { if (confirm('要退出本次听写吗？')) endSession(); };
-    $('#skipBtn').onclick = () => nextStep();
+    $('#skipBtn').onclick = () => {
+      // 未对答案就跳过：也算今天做过，明天再复习
+      commit({ item: it, mode: step.mode }, null);
+    };
     $('#submitBtn').onclick = submit;
     $('#speakBtn').onclick = () => speakEn(it.en);
 
@@ -652,7 +657,7 @@
       </div>`;
     $('#okBtn').onclick = () => finish(true);
     $('#noBtn').onclick = () => finish(false);
-    $('#skipBtn').onclick = () => nextStep();
+    $('#skipBtn').onclick = () => commit(step, null);
 
     function finish(ok) {
       if (ok) sess.correct++;
@@ -672,22 +677,27 @@
     if (target) target.classList.add('suggest');
   }
 
+  // correct: true=写对 / false=写错 / null=跳过（只记账，不算对错、不进错题本）
   function commit(step, correct) {
     const it = step.item;
     const d = Scheduler.todayStr();
+    const skipped = (correct === null);
+    const right = (correct === true) ? 1 : 0;
+    const wrong = (correct === false) ? 1 : 0;
     if (step.mode === 'new') {
-      Store.learn(it, d);
-      if (!correct) Store.answer(it, false, d);
+      Store.learn(it, d);                                  // 建立记录，明天进复习
+      if (wrong) Store.answer(it, false, d);               // 写错 → 进错题本、重排
       const log = todayLog();
       log.newCount[it.type] = (log.newCount[it.type] || 0) + 1;
-      Store.bumpLog({ newCount: log.newCount, correct: (log.correct || 0) + (correct ? 1 : 0), wrong: (log.wrong || 0) + (correct ? 0 : 1) });
+      Store.bumpLog({ newCount: log.newCount, correct: (log.correct || 0) + right, wrong: (log.wrong || 0) + wrong });
     } else {
-      Store.answer(it, correct, d);
+      if (skipped) Store.postpone(it, d);                  // 跳过 → 推到明天，今天不再出现
+      else Store.answer(it, correct, d);
       const log = todayLog();
       log.reviewCount[it.type] = (log.reviewCount[it.type] || 0) + 1;
-      Store.bumpLog({ reviewCount: log.reviewCount, correct: (log.correct || 0) + (correct ? 1 : 0), wrong: (log.wrong || 0) + (correct ? 0 : 1) });
+      Store.bumpLog({ reviewCount: log.reviewCount, correct: (log.correct || 0) + right, wrong: (log.wrong || 0) + wrong });
     }
-    if (!correct) sess.wrongList.push(it);
+    if (wrong) sess.wrongList.push(it);
     nextStep();
   }
 
@@ -924,6 +934,7 @@
         <input type="file" id="importFile" accept="application/json,.json" style="display:none">
         <div class="sec-title">数据</div>
         <button class="btn gray" id="resetData" style="width:100%;margin-top:8px">重置全部学习记录</button>
+        <p class="muted" style="text-align:center;margin-top:22px;font-size:12px">当前版本 ${APP_VERSION}</p>
         <div class="actions" style="margin-top:18px">
           <button class="btn ghost" id="setCancel">取消</button>
           <button class="btn" id="setSave">保存</button>
