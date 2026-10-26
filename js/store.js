@@ -40,6 +40,42 @@ const Store = (function () {
   }
   let log = read(K.log, {});
 
+  /* ---------------- 词库迁移 v3 ----------------
+     data.js 升级后，部分条目的 en 清洗结果变了（词性后缀剥除更彻底、全角标点不再回退），
+     导致 records/mistakes 的 key（type|en_lower）可能和新词库对不上。
+     这里把旧 key 自动映射到新 key，学习进度不丢。
+  */
+  (function migrateKeysV3() {
+    if (settings.migratedLexiconV3) return;
+    const builtin = (window.LEXICON || []);
+    // 构建 en_lower -> 新 key 的映射（取新词库里该 en 对应的 type 生成 key）
+    const enToNewKey = {};
+    for (const it of builtin) {
+      const e = String(it.en).toLowerCase();
+      if (!enToNewKey[e]) enToNewKey[e] = it.type + '|' + e;
+    }
+    let moved = 0;
+    const doMigrate = (obj, writeKey) => {
+      const out = {};
+      for (const oldK in obj) {
+        const sep = oldK.indexOf('|');
+        if (sep < 0) { out[oldK] = obj[oldK]; continue; }
+        const oldEn = oldK.slice(sep + 1);
+        const newK = enToNewKey[oldEn] || oldK;
+        if (newK !== oldK) moved++;
+        const val = Object.assign({}, obj[oldK], { key: newK, type: builtin.find(x => x.type + '|' + x.en.toLowerCase() === newK)?.type || obj[oldK].type });
+        out[newK] = val;
+      }
+      write(writeKey, out);
+      return out;
+    };
+    records = doMigrate(records, K.records);
+    mistakes = doMigrate(mistakes, K.mistakes);
+    settings.migratedLexiconV3 = true;
+    write(K.settings, settings);
+    if (moved) console.log('[Store] 词库迁移完成：' + moved + ' 条记录 key 已自动升级');
+  })();
+
   /* ---------------- 持续打卡 ---------------- */
   const CHECKIN_DEFAULT = {
     dates: [],        // 已打卡日期（含补签）
