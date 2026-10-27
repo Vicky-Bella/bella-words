@@ -45,8 +45,22 @@ const Store = (function () {
      旧记录的 key（type|en_lower）可能对不上；另外旧版解析有截断 bug（st / ru 等）。
      这里自动把 key 映射到新词库，并把对不上的旧解析残留清掉。
   */
-  (function migrateLexiconV4() {
-    if (settings.migratedLexiconV4) return;
+  (function migrateLexiconV5() {
+    if (settings.migratedLexiconV5) return;
+    // 先清掉旧解析上传时混进来的垃圾条目（如 "3A" -> "学习单1"、纯标题行）
+    const isJunk = (it) => {
+      const en = String(it.en || '');
+      const zh = String(it.zh || '');
+      if ((en.match(/[A-Za-z]/g) || []).length < 2) return true;
+      if (/学习单|单元|Unit\s*\d+\s*$/i.test(zh) && en.length <= 3) return true;
+      if (/^\s*(学习单|单元)/.test(zh)) return true;
+      return false;
+    };
+    const beforeLex = (userLex || []).length;
+    userLex = (userLex || []).filter(it => !isJunk(it));
+    const cleanedLex = beforeLex - userLex.length;
+    if (cleanedLex) write(K.userLex, userLex);
+
     const pool = (window.LEXICON || []).concat(userLex || []);
     const enMap = {};
     const norm = s => String(s).toLowerCase().replace(/[.\u2026\s]+$/, '').replace(/\s+/g, ' ').trim();
@@ -78,9 +92,9 @@ const Store = (function () {
     };
     records = doMigrate(records, K.records);
     mistakes = doMigrate(mistakes, K.mistakes);
-    settings.migratedLexiconV4 = true;
+    settings.migratedLexiconV5 = true;
     write(K.settings, settings);
-    if (moved || dropped) console.log('[Store] 词库迁移：' + moved + ' 条已升级，' + dropped + ' 条旧解析残留已清理');
+    if (moved || dropped || cleanedLex) console.log('[Store] 词库迁移：' + moved + ' 条已升级，' + dropped + ' 条旧解析残留已清理，' + cleanedLex + ' 条垃圾词已删除');
   })();
 
   /* ---------------- 持续打卡 ---------------- */
