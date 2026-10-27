@@ -40,40 +40,47 @@ const Store = (function () {
   }
   let log = read(K.log, {});
 
-  /* ---------------- 词库迁移 v3 ----------------
-     data.js 升级后，部分条目的 en 清洗结果变了（词性后缀剥除更彻底、全角标点不再回退），
-     导致 records/mistakes 的 key（type|en_lower）可能和新词库对不上。
-     这里把旧 key 自动映射到新 key，学习进度不丢。
+  /* ---------------- 词库迁移 v4 ----------------
+     data.js 升级后部分条目的 en 清洗结果变了（词性后缀、全角标点、末尾省略号），
+     旧记录的 key（type|en_lower）可能对不上；另外旧版解析有截断 bug（st / ru 等）。
+     这里自动把 key 映射到新词库，并把对不上的旧解析残留清掉。
   */
-  (function migrateKeysV3() {
-    if (settings.migratedLexiconV3) return;
-    const builtin = (window.LEXICON || []);
-    // 构建 en_lower -> 新 key 的映射（取新词库里该 en 对应的 type 生成 key）
-    const enToNewKey = {};
-    for (const it of builtin) {
+  (function migrateLexiconV4() {
+    if (settings.migratedLexiconV4) return;
+    const pool = (window.LEXICON || []).concat(userLex || []);
+    const enMap = {};
+    const norm = s => String(s).toLowerCase().replace(/[.\u2026\s]+$/, '').replace(/\s+/g, ' ').trim();
+    const normMap = {};
+    for (const it of pool) {
       const e = String(it.en).toLowerCase();
-      if (!enToNewKey[e]) enToNewKey[e] = it.type + '|' + e;
+      if (!enMap[e]) enMap[e] = it;
+      const n = norm(it.en);
+      if (!normMap[n]) normMap[n] = it;
     }
-    let moved = 0;
+    let moved = 0, dropped = 0;
     const doMigrate = (obj, writeKey) => {
       const out = {};
       for (const oldK in obj) {
         const sep = oldK.indexOf('|');
         if (sep < 0) { out[oldK] = obj[oldK]; continue; }
         const oldEn = oldK.slice(sep + 1);
-        const newK = enToNewKey[oldEn] || oldK;
+        const item = enMap[oldEn] || normMap[norm(oldEn)];
+        if (!item) { dropped++; continue; }   // 旧解析残留（如 st / ru），清掉
+        const newK = item.type + '|' + String(item.en).toLowerCase();
         if (newK !== oldK) moved++;
-        const val = Object.assign({}, obj[oldK], { key: newK, type: builtin.find(x => x.type + '|' + x.en.toLowerCase() === newK)?.type || obj[oldK].type });
-        out[newK] = val;
+        out[newK] = Object.assign({}, obj[oldK], {
+          key: newK, type: item.type, en: item.en,
+          zh: item.zh || obj[oldK].zh, unit: item.unit || obj[oldK].unit || '',
+        });
       }
       write(writeKey, out);
       return out;
     };
     records = doMigrate(records, K.records);
     mistakes = doMigrate(mistakes, K.mistakes);
-    settings.migratedLexiconV3 = true;
+    settings.migratedLexiconV4 = true;
     write(K.settings, settings);
-    if (moved) console.log('[Store] 词库迁移完成：' + moved + ' 条记录 key 已自动升级');
+    if (moved || dropped) console.log('[Store] 词库迁移：' + moved + ' 条已升级，' + dropped + ' 条旧解析残留已清理');
   })();
 
   /* ---------------- 持续打卡 ---------------- */

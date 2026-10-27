@@ -10,9 +10,11 @@ const DocxParser = (function () {
   const JSZIP_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
   const IDEOGRAPH = /[\u4e00-\u9fff]/;
   // 词性后缀：点可选（有的文档带 n. 有的只写 n）
-  const POS_TOKEN = '(?:n|v|adj|adv|prep|conj|pron|num|int|art|abbr|pl|vt|vi)\\.?';
-  const POS_RE = new RegExp('(?:\\s*' + POS_TOKEN + ')+\\s*$');
-  const POS_ANY = new RegExp('\\s*' + POS_TOKEN + '\\s*', 'g');
+  const POS_BASE = '(?:n|v|adj|adv|prep|conj|pron|num|int|art|abbr|pl|vt|vi)';
+  // 词性后缀必须单独成词（前面有空格），点号可省略
+  const POS_RE = new RegExp('(?:\\s+' + POS_BASE + '\\.?)+\\s*$');
+  // 中文释义里的词性标记必须带点，避免误删普通英文
+  const POS_ANY = new RegExp('\\s*' + POS_BASE + '\\.\\s*', 'g');
   const PAREN_RE = /\s*\((?:pl\.|.*?)\)\s*$/;
 
   let zipReady = null;
@@ -145,6 +147,7 @@ const DocxParser = (function () {
     const zh2 = cleanZh(zh);
     if (!en2 || !hasEn(en2) || !zh2) return;
     if (en2.length < 2) return;
+    if ((en2.match(/[A-Za-z]/g) || []).length < 2) return;
     if (/^[的地]/.test(zh2)) return;
     const key = en2.toLowerCase();
     if (seen.has(key)) return;
