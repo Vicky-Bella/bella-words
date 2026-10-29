@@ -1,6 +1,6 @@
 /* Service Worker：预缓存全部文件，让 iPad 加到主屏后离线秒开。
    更新 App 后请把下面的版本号 +1，用户下次打开即自动更新。 */
-const CACHE = 'eb-v13';
+const CACHE = 'eb-v14';
 
 const ASSETS = [
   './',
