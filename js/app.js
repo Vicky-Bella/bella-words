@@ -377,6 +377,8 @@
     d: '',               // 当前 path 的 d 字符串
     lastX: 0, lastY: 0,
     rect: null,          // 落笔时缓存一次，避免每次移动都触发布局重排
+    pointerId: null,     // 当前这一笔属于哪个指针（笔/手指）
+    pointerType: '',
   };
   function inkPos(e) {
     const board = $('#inkBoard');
@@ -411,8 +413,15 @@
   }
   function inkDown(e) {
     const board = e.currentTarget;
+    if (ink.drawing) {
+      // 手掌/手指先落屏后又落笔：让 Apple Pencil 接管这一笔
+      if (e.pointerType === 'pen' && ink.pointerType !== 'pen') inkUp(null);
+      else return;                      // 其它多余触点全部忽略，不打断正在写的笔画
+    }
+    ink.pointerId = e.pointerId;
+    ink.pointerType = e.pointerType || 'pen';
     ink.rect = board.getBoundingClientRect();     // 整笔只取一次
-    if (board.setPointerCapture) board.setPointerCapture(e.pointerId);
+    try { if (board.setPointerCapture) board.setPointerCapture(e.pointerId); } catch (err) {}
     ink.drawing = true;
     const p = inkPos(e);
     ink.lastX = p.x; ink.lastY = p.y;
@@ -441,6 +450,7 @@
   }
   function inkMove(e) {
     if (!ink.drawing) return;
+    if (e.pointerId !== ink.pointerId) return;   // 只认当前这一笔的指针
     // iPad 会把多个采样点合并成一个事件，取出来补全，笔迹才不虚
     const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
     const list = evs && evs.length ? evs : [e];
@@ -453,8 +463,11 @@
   }
   function inkUp(e) {
     if (!ink.drawing) return;
+    if (e && e.pointerId !== undefined && e.pointerId !== ink.pointerId) return;
     ink.drawing = false;
     ink.rect = null;
+    ink.pointerId = null;
+    ink.pointerType = '';
     if (ink.stroke) {
       ink.d += ' L ' + ink.lastX.toFixed(1) + ' ' + ink.lastY.toFixed(1);
       ink.stroke.setAttribute('d', ink.d);
@@ -475,6 +488,11 @@
     board.addEventListener('pointermove', inkMove, opt);
     board.addEventListener('pointerup', inkUp, opt);
     board.addEventListener('pointercancel', inkUp, opt);
+    // 指针捕获被系统中途收回时，保留已写好的部分，再让下一笔正常开始
+    board.addEventListener('lostpointercapture', inkUp, opt);
+    // 长按/双击不让 iPad 弹出系统菜单
+    board.addEventListener('contextmenu', e => e.preventDefault(), opt);
+    board.addEventListener('dblclick', e => e.preventDefault(), opt);
   }
   // 把笔迹转成 PNG（只有开启自动识别时才会用到）
   function inkToImage() {
