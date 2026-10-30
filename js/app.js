@@ -379,9 +379,10 @@
     rect: null,          // 落笔时缓存一次，避免每次移动都触发布局重排
     pointerId: null,     // 当前这一笔属于哪个指针（笔/手指）
     pointerType: '',
+    board: null,         // 落笔时缓存，避免每个采样点都查一次 DOM
   };
   function inkPos(e) {
-    const board = $('#inkBoard');
+    const board = ink.board || $('#inkBoard');
     const r = ink.rect || (board ? board.getBoundingClientRect() : { left: 0, top: 0 });
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
@@ -420,6 +421,7 @@
     }
     ink.pointerId = e.pointerId;
     ink.pointerType = e.pointerType || 'pen';
+    ink.board = board;
     ink.rect = board.getBoundingClientRect();     // 整笔只取一次
     try { if (board.setPointerCapture) board.setPointerCapture(e.pointerId); } catch (err) {}
     ink.drawing = true;
@@ -439,14 +441,26 @@
     ink.stroke = path;
     e.preventDefault();
   }
-  // 增量追加二次贝塞尔：只做字符串拼接（成本恒定），圆头圆角衔接平滑
+  // 增量追加二次贝塞尔：只做字符串拼接；真正写回 DOM 合并到每帧一次，避免 240Hz 采样把主线程压住
+  let inkRaf = 0;
+  function inkFlush() {
+    if (inkRaf) { cancelAnimationFrame(inkRaf); inkRaf = 0; }
+    if (ink.stroke && ink.d) ink.stroke.setAttribute('d', ink.d);
+  }
+  function inkSchedule() {
+    if (inkRaf) return;
+    inkRaf = requestAnimationFrame(() => {
+      inkRaf = 0;
+      if (ink.stroke && ink.d) ink.stroke.setAttribute('d', ink.d);
+    });
+  }
   function inkMoveTo(p) {
     const path = ink.stroke; if (!path) return;
     const mx = (ink.lastX + p.x) / 2, my = (ink.lastY + p.y) / 2;
     ink.d += ' Q ' + ink.lastX.toFixed(1) + ' ' + ink.lastY.toFixed(1) +
              ' ' + mx.toFixed(1) + ' ' + my.toFixed(1);
-    path.setAttribute('d', ink.d);
     ink.lastX = p.x; ink.lastY = p.y;
+    inkSchedule();
   }
   function inkMove(e) {
     if (!ink.drawing) return;
@@ -470,7 +484,7 @@
     ink.pointerType = '';
     if (ink.stroke) {
       ink.d += ' L ' + ink.lastX.toFixed(1) + ' ' + ink.lastY.toFixed(1);
-      ink.stroke.setAttribute('d', ink.d);
+      inkFlush();
     }
     ink.stroke = null;
     ink.d = '';
@@ -1003,6 +1017,14 @@
   function closeSettings() { $('#settingsPanel').classList.add('hidden'); $('#settingsPanel').innerHTML = ''; }
 
   /* ---------------- 启动 ---------------- */
+  // 苹果笔停在页面上会被 iOS 当成“长按选字”：全局掐掉选字、拖拽、长按菜单
+  (function blockTextSelection() {
+    const allow = el => el && el.closest && el.closest('input,textarea');
+    document.addEventListener('selectstart', e => { if (!allow(e.target)) e.preventDefault(); }, true);
+    document.addEventListener('dragstart', e => { if (!allow(e.target)) e.preventDefault(); }, true);
+    document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+    document.addEventListener('contextmenu', e => { if (!allow(e.target)) e.preventDefault(); });
+  })();
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => go(b.dataset.tab));
   $('#settingsBtn').onclick = openSettings;
   initTts();
