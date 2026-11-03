@@ -76,6 +76,8 @@ const DocxParser = (function () {
   function classify(en) {
     // 只有真正的句号/感叹号/问号结尾才算句子（排除 ... 省略号、etc. 缩写等）
     if (/(?:(?<![.\u2026])[.!?！？])$/.test(en)) return 'sentence';
+    // 儿歌/对话里的半句：以逗号结尾且词数 >= 4，也算句子
+    if (/[,，]$/.test(en) && en.trim().split(/\s+/).length >= 4) return 'sentence';
     if (en.indexOf(' ') >= 0) return 'phrase';
     return 'word';
   }
@@ -230,6 +232,8 @@ const DocxParser = (function () {
         if (ens.length !== zhs.length || !ens.length) { ens = [en]; zhs = [zh]; }
         ens.forEach((e, idx) => {
           e = e.trim();
+          // 学习单的对话行常以 - / – 开头，去掉这个破折号再入库
+          e = e.replace(/^[-–—]\s*/, '').trim();
           if (!e || !hasEn(e)) return;
           const key = e.toLowerCase();
           if (seen.has(key)) return;
