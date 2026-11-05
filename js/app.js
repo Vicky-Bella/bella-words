@@ -311,43 +311,33 @@
       syn.speak(u);
     } catch (e) {}
   }
-  // 在线有道 TTS（用户上传的新词 / 预生成没有的词）
-  function onlineSpeak(text) {
+  // 在线有道 TTS：直接用 audio 播放（跨域无需 CORS），由 Service Worker 负责缓存
+  function youdaoUrl(text) {
     const cleaned = String(text)
       .replace(/[（(].*?[）)]/g, '')
       .replace(/[.!?,;:"，。！？；：…]/g, '')
       .trim();
-    if (!cleaned) { sysSpeak(text); return; }
-    const a = new Audio(`https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(cleaned)}&type=2`);
-    curAudio = a;
-    a.onended = () => { if (curAudio === a) curAudio = null; };
-    const onFail = () => { if (curAudio === a) curAudio = null; sysSpeak(text); };
-    a.onerror = onFail;
-    a.play().catch(onFail);
+    return cleaned
+      ? `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(cleaned)}&type=2`
+      : null;
   }
   function speakEn(text) {
     text = String(text);
     stopSpeak();
     const lex = window.LEXICON || [];
     const idx = lex.findIndex(it => it.en.toLowerCase() === text.toLowerCase());
-    if (idx >= 0) {
-      const item = lex[idx];
-      // 句子没有预生成音频，直接走系统 TTS（系统念整句韵律更好）
-      if (item.type === 'sentence') { sysSpeak(text); return; }
-      // 单词 / 词组：优先本地预生成 mp3
-      const a = new Audio(`audio/${idx}.mp3`);
-      curAudio = a;
-      a.onended = () => { if (curAudio === a) curAudio = null; };
-      const onFail = () => {
-        if (curAudio === a) curAudio = null;
-        onlineSpeak(text);   // 本地没有 → 在线有道 → 系统 TTS
-      };
-      a.onerror = onFail;
-      a.play().catch(onFail);
-      return;
-    }
-    // 不在词库（用户上传的新词）→ 在线有道
-    onlineSpeak(text);
+    const item = idx >= 0 ? lex[idx] : null;
+    // 句子：有道不支持整句，直接走系统 TTS（系统念整句韵律更好）
+    if (item && item.type === 'sentence') { sysSpeak(text); return; }
+    // 单词 / 词组：在线有道，SW 自动缓存，听过一次就离线可用
+    const url = youdaoUrl(text);
+    if (!url) { sysSpeak(text); return; }
+    const a = new Audio(url);
+    curAudio = a;
+    a.onended = () => { if (curAudio === a) curAudio = null; };
+    const onFail = () => { if (curAudio === a) curAudio = null; sysSpeak(text); };
+    a.onerror = onFail;
+    a.play().catch(onFail);
   }
 
   /* ---- OCR（Tesseract.js）---- */
@@ -603,7 +593,19 @@
     $('#session').classList.remove('hidden');
     $('#session').setAttribute('aria-hidden', 'false');
     warmupOcr();
+    preloadAudio(steps);   // 提前把今日单词/词组的发音下进缓存，点喇叭秒开
     nextStep();
+  }
+  // 预缓存：把本轮要学的单词/词组音频提前下载，Service Worker 会自动缓存
+  function preloadAudio(steps) {
+    try {
+      steps.forEach(s => {
+        const it = s.item;
+        if (!it || it.type === 'sentence') return;
+        const url = youdaoUrl(it.en);
+        if (url) fetch(url, { mode: 'no-cors' }).catch(() => {});
+      });
+    } catch (e) {}
   }
   function endSession() {
     $('#session').classList.add('hidden');
