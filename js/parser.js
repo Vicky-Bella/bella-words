@@ -15,7 +15,7 @@ const DocxParser = (function () {
   const POS_RE = new RegExp('(?:\\s+' + POS_BASE + '\\.?)+\\s*$');
   // 中文释义里的词性标记必须带点，避免误删普通英文
   const POS_ANY = new RegExp('\\s*' + POS_BASE + '\\.\\s*', 'g');
-  const PAREN_RE = /\s*\((?:pl\.|.*?)\)\s*$/;
+  const PAREN_RE = /\s*[（(](?:pl\.|.*?)[）)]\s*$/;
 
   let zipReady = null;
   function loadJSZip() {
@@ -55,11 +55,12 @@ const DocxParser = (function () {
     const m = IDEOGRAPH.exec(line);
     if (!m) return { en: line.trim(), zh: '' };
     let j = m.index;
-    // 只回退空白和全角空格(0x3000)，不回退全角标点（！？等）
+    // 回退：空白、全角空格、全角标点（0xFF00-0xFFEF，含（！？，。等）都归中文侧
     while (j > 0) {
       const c = line.charCodeAt(j - 1);
-      if (!(c === 32 || c === 0x3000 || c === 9)) break;
-      j--;
+      if (c === 32 || c === 0x3000 || c === 9 || (c >= 0xFF00 && c <= 0xFFEF)) {
+        j--;
+      } else break;
     }
     return { en: line.slice(0, j).trim(), zh: line.slice(j).trim() };
   }
@@ -104,10 +105,11 @@ const DocxParser = (function () {
       if (i >= n) break;
       if (!hasEn(line[i])) { i++; continue; }
 
-      // 找英文块：从当前位置开始，直到遇到第一个中文字符
+      // 找英文块：从当前位置开始，直到遇到第一个中文字符或全角标点
       const enStart = i;
       while (i < n && !IDEOGRAPH.test(line[i])) {
-        if (line[i] === '(') {
+        const c = line[i];
+        if (c === '(') {
           let depth = 1; i++;
           while (i < n && depth > 0) {
             if (line[i] === '(') depth++;
@@ -115,6 +117,8 @@ const DocxParser = (function () {
             i++;
           }
         } else {
+          const code = c.charCodeAt(0);
+          if (code >= 0xFF00 && code <= 0xFFEF) break; // 全角标点属于中文侧
           i++;
         }
       }

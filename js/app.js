@@ -265,19 +265,23 @@
   /* ---------------- 听写会话 ---------------- */
   let sess = null;
 
-  /* ---- 读音（浏览器内置 TTS，针对 iPad 做了兼容处理） ---- */
+  /* ---- 读音：优先本地预生成 mp3（有道，高质量），回退在线有道，最后系统 TTS ---- */
   let ttsVoice = null;
+  let curAudio = null;       // 当前正在播放的音频对象，用于停止
   function pickEnVoice() {
     try {
       const vs = window.speechSynthesis.getVoices() || [];
-      return vs.find(v => /en[-_]US/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null;
+      // 优先 enhanced 高质量语音，其次 compact，最后任何 en
+      return vs.find(v => /en[-_]US/i.test(v.lang) && /enhanced/i.test(v.name))
+          || vs.find(v => /en[-_]US/i.test(v.lang))
+          || vs.find(v => /^en/i.test(v.lang)) || null;
     } catch (e) { return null; }
   }
   function initTts() {
     if (!('speechSynthesis' in window)) return;
     ttsVoice = pickEnVoice();
     window.speechSynthesis.onvoiceschanged = () => { ttsVoice = pickEnVoice(); };
-    // iPad 首次必须在一个用户手势里“解锁”，否则以后点喇叭没声音
+    // iPad 首次必须在一个用户手势里"解锁"，否则以后点喇叭没声音
     document.addEventListener('pointerdown', function prime() {
       document.removeEventListener('pointerdown', prime);
       try {
@@ -288,20 +292,62 @@
       } catch (e) {}
     }, { once: true });
   }
-  function speakEn(text) {
-    if (!('speechSynthesis' in window)) { toast('这个设备不支持朗读'); return; }
+  // 停止所有朗读
+  function stopSpeak() {
+    if (curAudio) { try { curAudio.pause(); curAudio.currentTime = 0; } catch (e) {} curAudio = null; }
+    try { window.speechSynthesis.cancel(); } catch (e) {}
+  }
+  // 系统 TTS（句子 / 兜底）
+  function sysSpeak(text) {
+    if (!('speechSynthesis' in window)) return;
     try {
       const syn = window.speechSynthesis;
       syn.cancel();
       const u = new SpeechSynthesisUtterance(String(text));
       u.lang = 'en-US';
-      u.rate = 0.85;
-      u.pitch = 1;
-      u.volume = 1;
+      u.rate = 0.9; u.pitch = 1; u.volume = 1;
       const v = ttsVoice || pickEnVoice();
       if (v) { u.voice = v; ttsVoice = v; }
       syn.speak(u);
-    } catch (e) { toast('朗读失败'); }
+    } catch (e) {}
+  }
+  // 在线有道 TTS（用户上传的新词 / 预生成没有的词）
+  function onlineSpeak(text) {
+    const cleaned = String(text)
+      .replace(/[（(].*?[）)]/g, '')
+      .replace(/[.!?,;:"，。！？；：…]/g, '')
+      .trim();
+    if (!cleaned) { sysSpeak(text); return; }
+    const a = new Audio(`https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(cleaned)}&type=2`);
+    curAudio = a;
+    a.onended = () => { if (curAudio === a) curAudio = null; };
+    const onFail = () => { if (curAudio === a) curAudio = null; sysSpeak(text); };
+    a.onerror = onFail;
+    a.play().catch(onFail);
+  }
+  function speakEn(text) {
+    text = String(text);
+    stopSpeak();
+    const lex = window.LEXICON || [];
+    const idx = lex.findIndex(it => it.en.toLowerCase() === text.toLowerCase());
+    if (idx >= 0) {
+      const item = lex[idx];
+      // 句子没有预生成音频，直接走系统 TTS（系统念整句韵律更好）
+      if (item.type === 'sentence') { sysSpeak(text); return; }
+      // 单词 / 词组：优先本地预生成 mp3
+      const a = new Audio(`audio/${idx}.mp3`);
+      curAudio = a;
+      a.onended = () => { if (curAudio === a) curAudio = null; };
+      const onFail = () => {
+        if (curAudio === a) curAudio = null;
+        onlineSpeak(text);   // 本地没有 → 在线有道 → 系统 TTS
+      };
+      a.onerror = onFail;
+      a.play().catch(onFail);
+      return;
+    }
+    // 不在词库（用户上传的新词）→ 在线有道
+    onlineSpeak(text);
   }
 
   /* ---- OCR（Tesseract.js）---- */
