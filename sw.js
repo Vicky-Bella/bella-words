@@ -1,6 +1,6 @@
 /* Service Worker：预缓存全部文件，让 iPad 加到主屏后离线秒开。
    更新 App 后请把下面的版本号 +1，用户下次打开即自动更新。 */
-const CACHE = 'eb-v17';
+const CACHE = 'eb-v18';
 
 const ASSETS = [
   './',
@@ -38,9 +38,27 @@ self.addEventListener('activate', (e) => {
 });
 
 /* 缓存优先 + 后台更新：本地命中立即返回（快），同时静默拉取新版（保持最新）。 */
+const AUDIO_CACHE = 'eb-audio-v1';
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+
+  // 有道词典 TTS 音频：缓存优先，听过一次就离线可用
+  if (url.hostname === 'dict.youdao.com') {
+    e.respondWith(
+      caches.open(AUDIO_CACHE).then((c) => c.match(req).then((hit) => {
+        if (hit) return hit;
+        return fetch(req).then((res) => {
+          if (res && (res.ok || res.type === 'opaque')) c.put(req, res.clone());
+          return res;
+        }).catch(() => hit);
+      }))
+    );
+    return;
+  }
+
+  if (url.origin !== self.location.origin) return;
 
   e.respondWith(
     caches.match(req).then((hit) => {
