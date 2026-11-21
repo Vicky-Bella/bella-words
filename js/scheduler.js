@@ -28,16 +28,27 @@ const Scheduler = (function () {
     return m ? parseInt(m[1], 10) : 999;
   }
 
-  // 今日新学：该类型里还没学过（无记录）的，按单元顺序取前 limit 个
+  // 学习优先级：prio 越小越先学（0 = 3A，1 = 二年级下）
+  function prioOf(it) {
+    if (it && typeof it.prio === 'number') return it.prio;
+    return /2下/.test((it && it.source) || '') ? 1 : 0;
+  }
+
+  // 先按优先级（3A 在前），同优先级再按单元顺序
+  function byOrder(a, b) {
+    const p = prioOf(a) - prioOf(b);
+    return p !== 0 ? p : unitNum(a.unit) - unitNum(b.unit);
+  }
+
+  // 今日新学：该类型里还没学过（无记录）的，按优先级+单元顺序取前 limit 个
   function newItems(type, limit) {
-    const lex = Store.lexicon().filter(x => x.type === type)
-      .sort((a, b) => unitNum(a.unit) - unitNum(b.unit));
+    const lex = Store.lexicon().filter(x => x.type === type).sort(byOrder);
     const records = Store.getRecords();
     const fresh = lex.filter(x => !records[Store.keyOf(x)]);
     return fresh.slice(0, limit);
   }
 
-  // 今日复习：到期且未掌握的，按单元顺序排列
+  // 今日复习：到期且未掌握的，按优先级+单元顺序排列
   function reviewItems() {
     const records = Store.getRecords();
     const out = [];
@@ -46,7 +57,13 @@ const Scheduler = (function () {
       if (r.mastered || !r.nextDue) continue;
       if (isDue(r.nextDue)) out.push(r);
     }
+    // 记录里没存 prio，按 key 回查词库
+    const prioByKey = {};
+    for (const it of Store.lexicon()) prioByKey[Store.keyOf(it)] = prioOf(it);
     return out.sort((a, b) => {
+      const pa = typeof prioByKey[a.key] === 'number' ? prioByKey[a.key] : 0;
+      const pb = typeof prioByKey[b.key] === 'number' ? prioByKey[b.key] : 0;
+      if (pa !== pb) return pa - pb;
       const d = unitNum(a.unit) - unitNum(b.unit);
       return d !== 0 ? d : String(a.learnedAt || '').localeCompare(String(b.learnedAt || ''));
     });
